@@ -1,0 +1,171 @@
+{
+  "name": "Lab DIO - Assistente de Investimentos",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "fb938f64-cc34-43cd-974e-e3e09787eacb",
+      "name": "Buscar CSV de investimentos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        464,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resposta = $input.first()?.json?.data;\nconst texto = typeof resposta === 'string' ? resposta : String(resposta ?? '');\nconst linhas = texto.replace(/^\\uFEFF/, '').split(/\\r?\\n/).map(linha => linha.trim()).filter(Boolean);\nif (linhas.length < 2) throw new Error('O CSV de investimentos está vazio ou inválido.');\n\nconst cabecalhos = linhas.shift().split(',').map(campo => campo.trim());\nconst obrigatorios = ['perfil', 'produto', 'minimo', 'rentabilidade'];\nif (!obrigatorios.every(campo => cabecalhos.includes(campo))) {\n  throw new Error('O CSV precisa conter perfil, produto, minimo e rentabilidade.');\n}\n\nconst investimentos = linhas.map(linha => {\n  const valores = linha.split(',').map(campo => campo.trim());\n  const item = Object.fromEntries(cabecalhos.map((campo, indice) => [campo, valores[indice] ?? '']));\n  const minimo = Number(String(item.minimo).replace(/[^\\d.-]/g, ''));\n  if (!Number.isFinite(minimo)) throw new Error(`Valor mínimo inválido no CSV: ${item.minimo}`);\n  return { perfil: item.perfil, produto: item.produto, minimo, rentabilidade: item.rentabilidade };\n});\n\nreturn [{ json: { investimentos } }];"
+      },
+      "id": "d9cbe338-ae79-469e-b67e-5911970b9b29",
+      "name": "Converter CSV em investimentos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "6645b350-bd7f-4dab-9de1-f123a1c32fe3",
+      "name": "Combinar clientes e investimentos",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        864,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const entrada = $input.first()?.json ?? {};\nconst clientes = entrada.body?.clientes ?? entrada.clientes ?? [];\nconst investimentos = entrada.investimentos ?? [];\nif (!Array.isArray(clientes) || clientes.length === 0) throw new Error('O Webhook precisa receber body.clientes como uma lista não vazia.');\nif (!Array.isArray(investimentos) || investimentos.length === 0) throw new Error('A lista de investimentos está vazia.');\n\nfunction saldoComoNumero(valor) {\n  const normalizado = String(valor ?? '').replace(/[^\\d,.-]/g, '').replace(/\\./g, '').replace(',', '.');\n  const numero = Number(normalizado);\n  if (!Number.isFinite(numero)) throw new Error(`Saldo inválido: ${valor}`);\n  return numero;\n}\nconst moeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });\n\nconst resultados = clientes.map(cliente => {\n  const saldoNumero = saldoComoNumero(cliente.saldo);\n  const elegiveis = investimentos\n    .filter(item => item.perfil === cliente.perfil && Number(item.minimo) <= saldoNumero)\n    .sort((a, b) => Number(b.minimo) - Number(a.minimo));\n  const escolhido = elegiveis[0] ?? null;\n  const recomendacao = escolhido ? {\n    perfil: escolhido.perfil,\n    produto: escolhido.produto,\n    minimo: Number(escolhido.minimo),\n    rentabilidade: escolhido.rentabilidade\n  } : null;\n  const saldoTexto = moeda.format(saldoNumero);\n  const nome = cliente.nome ?? 'Cliente';\n  const produto = escolhido?.produto ?? 'nenhuma opção do CSV atende ao saldo informado';\n  const minimoTexto = escolhido ? moeda.format(Number(escolhido.minimo)) : '';\n  const rentabilidade = escolhido?.rentabilidade ?? '';\n  const nota = 'Dados fictícios do exercício; isto não é uma recomendação financeira.';\n  const mensagens = escolhido ? [\n    `Olá ${nome}! Pelo seu perfil ${cliente.perfil}, uma opção elegível no exemplo é ${produto} (mínimo ${minimoTexto}). Seu saldo informado (${saldoTexto}) atende ao mínimo. Rentabilidade indicada no CSV do exercício: ${rentabilidade}. ${nota}`,\n    `Olá ${nome}! Para o perfil ${cliente.perfil}, o fluxo encontrou ${produto}, com mínimo de ${minimoTexto}. O saldo usado no teste é ${saldoTexto}; a rentabilidade exibida (${rentabilidade}) vem apenas do CSV didático. ${nota}`,\n    `${nome}, indo direto ao ponto: neste teste, ${produto} é a opção elegível selecionada para o perfil ${cliente.perfil}, pois o saldo (${saldoTexto}) atende ao mínimo de ${minimoTexto}. Rentabilidade no CSV: ${rentabilidade}. ${nota}`\n  ] : [\n    `Olá ${nome}! Não encontramos no CSV do exercício um produto de perfil ${cliente.perfil} com valor mínimo compatível com o saldo informado (${saldoTexto}). ${nota}`,\n    `Olá ${nome}! O fluxo não localizou uma opção elegível para o perfil ${cliente.perfil} e o saldo informado (${saldoTexto}). ${nota}`,\n    `${nome}, o teste não encontrou produto do perfil ${cliente.perfil} cujo mínimo caiba no saldo de ${saldoTexto}. ${nota}`\n  ];\n\n  return {\n    nome,\n    email: cliente.email,\n    perfil: cliente.perfil,\n    saldo_texto: cliente.saldo,\n    saldo_num: saldoNumero,\n    recomendacao,\n    motivo: escolhido ? 'saldo_ok' : 'sem_produto_elegivel',\n    mensagens,\n    mensagem_escolhida: mensagens[0]\n  };\n});\n\nreturn [{\n  json: {\n    ok: true,\n    total_clientes: resultados.length,\n    total_investimentos: investimentos.length,\n    resultados\n  }\n}];"
+      },
+      "id": "534ce480-4fa3-430b-b2d1-c60c1158aa12",
+      "name": "Gerar recomendação por cliente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "a4d1b63e-5d12-4aba-aad5-596eac56cb8f",
+      "name": "Responder com resultados",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1296,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "91a92382-2328-4cbf-be0f-0563cf2f661c",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        80,
+        336
+      ],
+      "id": "b0a707fe-6939-491c-a78e-fbfae59e3a4b",
+      "name": "Receber clientes",
+      "webhookId": "91a92382-2328-4cbf-be0f-0563cf2f661c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Buscar CSV de investimentos": {
+      "main": [
+        [
+          {
+            "node": "Converter CSV em investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Converter CSV em investimentos": {
+      "main": [
+        [
+          {
+            "node": "Combinar clientes e investimentos",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Combinar clientes e investimentos": {
+      "main": [
+        [
+          {
+            "node": "Gerar recomendação por cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gerar recomendação por cliente": {
+      "main": [
+        [
+          {
+            "node": "Responder com resultados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receber clientes": {
+      "main": [
+        [
+          {
+            "node": "Combinar clientes e investimentos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Buscar CSV de investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "68cc84cf-cb5d-4e39-85ca-a103422bc883",
+  "meta": {
+    "instanceId": "80cd2cde4258d8bcc3a0e15f7e6849b4e538606516c1f4b682e195b43a0283d3"
+  },
+  "nodeGroups": [],
+  "id": "YYBV4AY7sdwoNNr5",
+  "tags": []
+}
